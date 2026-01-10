@@ -119,7 +119,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name }}
-          files: Hikari-LLVM15-Xcode16.tar.gz
+          files: ./Hikari-LLVM15-Xcode16.tar.gz
           body: "Hikari-LLVM15 预编译工具链 (包含修复后的 compiler-rt 库)"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
