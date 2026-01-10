@@ -1,6 +1,7 @@
 name: 编译 Hikari-LLVM15 工具链 (Xcode 16)
 
 on:
+  # 手动触发编译，允许自定义 Release 标签名
   workflow_dispatch:
     inputs:
       tag_name:
@@ -8,37 +9,42 @@ on:
         required: true
         default: 'v1.0'
 
+# 赋予 Action 写入 Release 的权限
 permissions:
   contents: write
 
 jobs:
   build_toolchain:
-    runs-on: macos-14 # 使用 macOS 14 运行器
+    # 使用 macos-14 (M1/arm64) 运行器
+    runs-on: macos-14
 
     steps:
+      # --- 步骤 1：增加 Git 缓冲区 ---
       - name: 1. 设置 Git 缓冲区
         run: git config --global http.postBuffer 524288000
 
+      # --- 步骤 2：安装编译必须的工具 Ninja 和 CMake ---
       - name: 2. 安装编译依赖
         run: brew install ninja cmake
 
-      # --- 关键：切换到 Xcode 16.2 ---
-      - name: 3. 切换 Xcode 版本到 16.2
+      # --- 步骤 3：强制切换 Xcode 到 16.2 版本 (确保 compiler-rt 版本正确) ---
+      - name: 3. 切换 Xcode 版本
         run: |
           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
           xcodebuild -version
 
-      - name: 4. 克隆源码并重定向子模块地址
+      # --- 步骤 4：递归克隆你的 Hikari-LLVM15 源码 ---
+      - name: 4. 克隆源码 (Recursive)
         run: |
-          git clone -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
-          cd Hikari-LLVM15
+          git clone --recursive -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
 
-      - name: 5. 执行 CMake 配置 (使用绝对路径)
+      # --- 步骤 5：执行 CMake 配置 (使用绝对路径) ---
+      - name: 5. 执行 CMake 配置
         run: |
           mkdir Build
           cd Build
-          # 获取当前绝对路径作为安装前缀
-          INSTALL_PREFIX=$(pwd)/install
+          # 使用绝对路径安装到当前目录下的 install 文件夹
+          ABS_INSTALL_DIR=$(pwd)/install
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -53,73 +59,74 @@ jobs:
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DLLVM_BUILD_TOOLS=OFF \
             -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
-            -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
+            -DCMAKE_INSTALL_PREFIX="$ABS_INSTALL_DIR" \
             ../Hikari-LLVM15/llvm
 
+      # --- 步骤 6：开始 Ninja 编译 (核心步骤，耗时较长) ---
       - name: 6. 开始 Ninja 编译
         run: |
           cd Build
           ninja
 
-      # --- 关键：同时执行 install 和 install-xcode-toolchain ---
-      - name: 7. 安装并生成工具链结构
+      # --- 步骤 7：生成 Xcode 工具链结构 ---
+      - name: 7. 安装并生成 Xcode 工具链
         run: |
           cd Build
-          # 先进行标准安装，确保 lib 目录生成
+          # 先执行标准安装，确保基础库目录生成
           ninja install
-          # 再生成工具链包
+          # 再生成 .xctoolchain 结构
           ninja install-xcode-toolchain
 
-      - name: 8. 修复 compiler-rt (强化路径探测)
+      # --- 步骤 8：修复并复制 compiler-rt 库 (使用 find 自动定位) ---
+      - name: 8. 修复并复制 compiler-rt 库
         run: |
           # 1. 定位系统 Xcode 16.2 的库路径
           SYS_LIB_PATH=$(ls -d /Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/*/lib/darwin | head -n 1)
           echo "系统编译器库源路径: $SYS_LIB_PATH"
           
-          # 2. 深度搜索生成的 .xctoolchain 文件夹
-          # 不再限制在 Build/install，而是在整个 Build 目录下找
-          TOOLCHAIN_DIR=$(find Build -name "*.xctoolchain" -type d | head -n 1)
-          echo "工具链实际位置: $TOOLCHAIN_DIR"
+          # 2. 自动寻找生成的工具链目录 (不管它躲在哪个层级)
+          TARGET_TOOLCHAIN_DIR=$(find Build -name "*.xctoolchain" -type d | head -n 1)
+          echo "生成的工具链根目录: $TARGET_TOOLCHAIN_DIR"
           
-          if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "❌ 错误：未找到生成的 .xctoolchain 文件夹"
-            exit 1
-          fi
-          
-          # 3. 搜索工具链内部存放 clang 库的 lib 目录
-          TARGET_CLANG_LIB_DIR=$(find "$TOOLCHAIN_DIR" -name "lib" -type d | grep "clang" | head -n 1)
+          # 3. 寻找工具链内部存放 clang 库的 lib 目录
+          TARGET_CLANG_LIB_DIR=$(find "$TARGET_TOOLCHAIN_DIR" -name "lib" -type d | grep "clang" | head -n 1)
           echo "目标修复路径: $TARGET_CLANG_LIB_DIR"
           
+          # 4. 执行创建和复制 (补全 darwin 库)
           if [ -n "$TARGET_CLANG_LIB_DIR" ]; then
             mkdir -p "$TARGET_CLANG_LIB_DIR/darwin"
             cp -R "$SYS_LIB_PATH/" "$TARGET_CLANG_LIB_DIR/darwin/"
             echo "✅ compiler-rt 修复成功"
           else
             echo "❌ 错误：无法定位工具链内部的 Clang lib 目录"
-            # 打印目录结构辅助调试
             find Build -maxdepth 5
             exit 1
           fi
 
+      # --- 步骤 9：将编译好的工具链打包成压缩包 ---
       - name: 9. 打包工具链 (Hikari-LLVM15-Xcode16.tar.gz)
         run: |
-          # 找到工具链所在目录并打包
-          TOOLCHAIN_PATH=$(find Build -name "*.xctoolchain" -type d | head -n 1)
-          TOOLCHAIN_DIRNAME=$(dirname "$TOOLCHAIN_PATH")
-          TOOLCHAIN_BASENAME=$(basename "$TOOLCHAIN_PATH")
+          # 定位工具链所在目录进行打包
+          FULL_PATH=$(find Build -name "*.xctoolchain" -type d | head -n 1)
+          BASE_DIR=$(dirname "$FULL_PATH")
+          FOLDER_NAME=$(basename "$FULL_PATH")
           
-          echo "打包路径: $TOOLCHAIN_DIRNAME / $TOOLCHAIN_BASENAME"
-          cd "$TOOLCHAIN_DIRNAME"
-          tar -czvf ../../Hikari-LLVM15-Xcode16.tar.gz "$TOOLCHAIN_BASENAME"
+          cd "$BASE_DIR"
+          tar -czvf ../../Hikari-LLVM15-Xcode16.tar.gz "$FOLDER_NAME"
+          echo "✅ 打包完成: $FOLDER_NAME"
 
-      - name: 10. 上传到 Release
+      # --- 步骤 10：创建 Release 并上传成品 ---
+      - name: 10. 上传成品到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name }}
           files: Hikari-LLVM15-Xcode16.tar.gz
           body: |
-            ### Hikari LLVM 15 预编译工具链 (Xcode 16)
-            - **适配**: Xcode 16.2
-            - **修复**: 已补全 compiler-rt (darwin libs)
+            ### Hikari LLVM 15 预编译工具链 (适配 Xcode 16)
+            - **架构**: arm64 (Apple Silicon)
+            - **适配版本**: Xcode 16.2
+            - **说明**: 已自动补全 compiler-rt (darwin 运行库)
+            
+            使用方法：解压后放入 `~/Library/Developer/Toolchains/` 即可。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
