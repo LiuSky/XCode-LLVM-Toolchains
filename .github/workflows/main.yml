@@ -1,0 +1,109 @@
+name: 编译 Hikari-LLVM15 工具链 (Xcode 16)
+
+on:
+  # 手动触发编译，并允许自定义 Release 标签名
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '发布到 Release 的版本号 (如 v1.0)'
+        required: true
+        default: 'v1.0'
+
+# 赋予 Action 写入 Release 的权限
+permissions:
+  contents: write
+
+jobs:
+  build_toolchain:
+    # 使用 macos-14 (M1/arm64) 运行器，编译速度最快且符合目标架构
+    runs-on: macos-14
+
+    steps:
+      # --- 步骤 1：增加 Git 缓冲区，防止克隆超大型库时失败 ---
+      - name: 1. 设置 Git 缓冲区
+        run: git config --global http.postBuffer 524288000
+
+      # --- 步骤 2：安装编译必须的工具 Ninja 和 CMake ---
+      - name: 2. 安装编译依赖
+        run: brew install ninja cmake
+
+      # --- 步骤 3：递归克隆 Hikari-LLVM15 源码 (对应你的步骤 2) ---
+      - name: 3. 克隆 Hikari 源码 (apple-arm64e-upstream-next 分支)
+        run: |
+          git clone --recursive -b apple-arm64e-upstream-next https://github.com/chenyong318/Hikari-LLVM15.git
+
+      # --- 步骤 4：使用 CMake 配置项目 (对应你的步骤 3、4、5) ---
+      - name: 4. 执行 CMake 配置
+        run: |
+          mkdir Build
+          cd Build
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DLLVM_ENABLE_PROJECTS=clang \
+            -DLLVM_TARGETS_TO_BUILD="X86;ARM;AArch64" \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DLLVM_CREATE_XCODE_TOOLCHAIN=ON \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_UTILS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+            -DCMAKE_INSTALL_PREFIX="./install" \
+            ../Hikari-LLVM15/llvm
+
+      # --- 步骤 5：使用 Ninja 进行编译 (对应你的步骤 6) ---
+      - name: 5. 开始 Ninja 编译 (耗时较长)
+        run: |
+          cd Build
+          ninja
+
+      # --- 步骤 6：生成 Xcode 工具链结构 (对应你的步骤 7) ---
+      - name: 6. 安装并生成 Xcode 工具链
+        run: |
+          cd Build
+          ninja install-xcode-toolchain
+
+      # --- 步骤 7：修复 compiler-rt (对应你的步骤 9) ---
+      # 逻辑：从系统 Xcode 16.2 复制 darwin 相关的库到我们编译好的工具链中
+      - name: 7. 修复并复制 compiler-rt 库
+        run: |
+          # 找到系统自带的 Clang darwin 库路径 (Xcode 16.2)
+          SYS_LIB_PATH=$(ls -d /Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/*/lib/darwin | head -n 1)
+          echo "系统编译器库路径: $SYS_LIB_PATH"
+          
+          # 找到我们刚刚编译出来的 Hikari 内部 Clang 的 lib 目录
+          # 它通常位于 Build/install/usr/lib/clang/某个版本号/lib/
+          TARGET_LIB_BASE=$(find Build/install -name "lib" -type d | grep "clang" | head -n 1)
+          echo "目标修复路径: $TARGET_LIB_BASE"
+          
+          # 创建目录并执行复制
+          mkdir -p "$TARGET_LIB_BASE"
+          cp -R "$SYS_LIB_PATH" "$TARGET_LIB_BASE/"
+          echo "✅ compiler-rt 修复成功"
+
+      # --- 步骤 8：将编译好的工具链打包成压缩包 ---
+      - name: 8. 打包工具链 (Hikari-LLVM15.tar.gz)
+        run: |
+          # 进入 install 目录，这里包含了完整的 .xctoolchain 结构
+          cd Build/install
+          tar -czvf ../../Hikari-LLVM15-Xcode16.tar.gz .
+
+      # --- 步骤 9：创建 Release 并上传成品 ---
+      - name: 9. 上传成品到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          files: Hikari-LLVM15-Xcode16.tar.gz
+          body: |
+            ### Hikari LLVM 15 预编译工具链 (适配 Xcode 16)
+            - **架构**: arm64 (Apple Silicon)
+            - **分支**: apple-arm64e-upstream-next
+            - **编译器版本**: LLVM 15.x
+            - **已修复**: 已自动从 Xcode 16.2 补全 compiler-rt 库
+            
+            **使用方法**: 下载解压后，放入 `~/Library/Developer/Toolchains/` 即可。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
