@@ -1,7 +1,6 @@
 name: 编译 Hikari-LLVM15 工具链 (Xcode 16)
 
 on:
-  # 手动触发编译，并允许自定义 Release 标签名
   workflow_dispatch:
     inputs:
       tag_name:
@@ -9,30 +8,38 @@ on:
         required: true
         default: 'v1.0'
 
-# 赋予 Action 写入 Release 的权限
 permissions:
   contents: write
 
 jobs:
   build_toolchain:
-    # 使用 macos-14 (M1/arm64) 运行器
     runs-on: macos-14
 
     steps:
-      # --- 步骤 1：增加 Git 缓冲区，防止克隆超大型库时失败 ---
       - name: 1. 设置 Git 缓冲区
         run: git config --global http.postBuffer 524288000
 
-      # --- 步骤 2：安装编译必须的工具 Ninja 和 CMake ---
       - name: 2. 安装编译依赖
         run: brew install ninja cmake
 
-      # --- 步骤 3：递归克隆 Hikari-LLVM15 源码 (对应你的步骤 2) ---
-      - name: 3. 克隆 Hikari 源码 (apple-arm64e-upstream-next 分支)
+      # --- 步骤 3：直接使用你自己的仓库并修复子模块链接 ---
+      - name: 3. 克隆源码并重定向子模块地址
         run: |
-          git clone --recursive -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
+          # 1. 克隆你自己的主仓库 (LiuSky/Hikari-LLVM15)
+          git clone -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
+          cd Hikari-LLVM15
+          
+          # 2. 检查并替换 .gitmodules 中的所有失效链接为 LiuSky 自己的链接
+          # 这一步是为了防止你的主仓库里还留着 61bcdefg 的死链
+          sed -i '' 's/61bcdefg/LiuSky/g' .gitmodules
+          
+          echo "--- 确认修改后的子模块配置 ---"
+          cat .gitmodules
+          
+          # 3. 同步配置并递归更新子模块
+          git submodule sync
+          git submodule update --init --recursive
 
-      # --- 步骤 4：使用 CMake 配置项目 (对应你的步骤 3、4、5) ---
       - name: 4. 执行 CMake 配置
         run: |
           mkdir Build
@@ -54,37 +61,27 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="./install" \
             ../Hikari-LLVM15/llvm
 
-      # --- 步骤 5：使用 Ninja 进行编译 (对应你的步骤 6) ---
-      - name: 5. 开始 Ninja 编译 (耗时较长)
+      - name: 5. 开始 Ninja 编译
         run: |
           cd Build
           ninja
 
-      # --- 步骤 6：生成 Xcode 工具链结构 (对应你的步骤 7) ---
       - name: 6. 安装并生成 Xcode 工具链
         run: |
           cd Build
           ninja install-xcode-toolchain
 
-      # --- 步骤 7：修复 compiler-rt (修正了路径探测逻辑) ---
       - name: 7. 修复并复制 compiler-rt 库
         run: |
-          # 1. 动态获取当前 Xcode 内部的 Clang 库路径，防止写死 16.2 路径不存在
-          # 它会自动找到类似 .../XcodeDefault.xctoolchain/usr/lib/clang/16.0.0/lib/darwin
           CURRENT_XCODE_PATH=$(xcode-select -p)
           SYS_LIB_PATH=$(ls -d $CURRENT_XCODE_PATH/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/*/lib/darwin | head -n 1)
           echo "系统编译器库源路径: $SYS_LIB_PATH"
           
-          # 2. 定位生成的工具链内部的目标 lib 路径
-          # 我们先找到生成的 .xctoolchain 文件夹，再往里找 usr/lib/clang/*/lib
           TARGET_TOOLCHAIN_DIR=$(ls -d Build/install/*.xctoolchain | head -n 1)
           echo "生成的工具链根目录: $TARGET_TOOLCHAIN_DIR"
           
-          # 这里的通配符会匹配到类似 15.0.0 或 19.0.0 这种版本号目录
           TARGET_CLANG_LIB_DIR=$(ls -d $TARGET_TOOLCHAIN_DIR/usr/lib/clang/*/lib | head -n 1)
-          echo "目标修复路径: $TARGET_CLANG_LIB_DIR"
           
-          # 3. 如果路径存在，则执行创建和复制
           if [ -n "$TARGET_CLANG_LIB_DIR" ]; then
             mkdir -p "$TARGET_CLANG_LIB_DIR"
             cp -R "$SYS_LIB_PATH" "$TARGET_CLANG_LIB_DIR/"
@@ -94,16 +91,12 @@ jobs:
             exit 1
           fi
 
-      # --- 步骤 8：将编译好的工具链打包成压缩包 ---
       - name: 8. 打包工具链 (Hikari-LLVM15-Xcode16.tar.gz)
         run: |
           cd Build/install
-          # 获取 .xctoolchain 文件夹的名称并打包整个文件夹
           TOOLCHAIN_NAME=$(ls -d *.xctoolchain)
           tar -czvf ../../Hikari-LLVM15-Xcode16.tar.gz "$TOOLCHAIN_NAME"
-          echo "✅ 打包完成: $TOOLCHAIN_NAME"
 
-      # --- 步骤 9：创建 Release 并上传成品 ---
       - name: 9. 上传成品到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,9 +105,7 @@ jobs:
           body: |
             ### Hikari LLVM 15 预编译工具链 (适配 Xcode 16)
             - **架构**: arm64 (Apple Silicon)
-            - **分支**: apple-arm64e-upstream-next
-            - **已修复**: 已自动补全 Xcode 16.x 对应的 compiler-rt 库
-            
-            **使用方法**: 解压后放入 `~/Library/Developer/Toolchains/` 即可。
+            - **源码**: 基于 LiuSky/Hikari-LLVM15 自家仓库
+            - **已修复**: 已自动补全 Xcode 16.2 的 compiler-rt 库
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
