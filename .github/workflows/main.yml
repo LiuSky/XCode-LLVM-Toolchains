@@ -32,9 +32,6 @@ jobs:
         run: |
           git clone -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
           cd Hikari-LLVM15
-          sed -i '' 's/61bcdefg/ta01st/g' .gitmodules
-          git submodule sync
-          git submodule update --init --recursive
 
       - name: 5. 执行 CMake 配置 (使用绝对路径)
         run: |
