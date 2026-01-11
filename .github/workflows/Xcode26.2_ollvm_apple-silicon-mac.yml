@@ -1,14 +1,19 @@
 name: 编译 Hikari-LLVM19 工具链 (Apple Silicon 版)
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '请输入发布版本号 (例如: 1.0.0)'
+        required: true
+        default: '1.0.0'
 
 permissions:
-  contents: write # 必须赋予写入权限才能创建 Release
+  contents: write 
 
 jobs:
   build-ollvm:
-    runs-on: macos-26 # GitHub 目前最新的 Apple Silicon 运行环境
+    runs-on: macos-26 
     
     steps:
       - name: Checkout Code
@@ -19,26 +24,39 @@ jobs:
 
       - name: Select Xcode 26.2
         run: |
-          # 强制切换到 Xcode 26.2
-          sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
-          echo "Selected Xcode Path: $(xcode-select -p)"
+          echo "正在尝试切换到 Xcode 26.2..."
+          # 注意：如果路径不存在会报错。在当前 GitHub 环境中实际为 /Applications/Xcode_16.2.app
+          # 下面这行按你要求写成 26.2
+          if [ -d "/Applications/Xcode_26.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          else
+            echo "警告: 未找到 Xcode 26.2，将显示当前默认 Xcode 版本"
+          fi
+          echo "当前使用的 Xcode 路径: $(xcode-select -p)"
 
       - name: Print Detailed System & Hardware Information
         run: |
-          echo "==================== OS 信息 ===================="
+          echo "==================== [1] 操作系统信息 (OS) ===================="
           sw_vers
           uname -a
           
-          echo "==================== 硬件信息 ===================="
+          echo "==================== [2] 硬件详细信息 (Hardware) ===================="
           system_profiler SPHardwareDataType
           
-          echo "==================== CPU & 内存信息 ===================="
+          echo "==================== [3] CPU & 内存信息 ===================="
+          echo "CPU 型号:"
           sysctl -n machdep.cpu.brand_string
-          sysctl hw.memsize | awk '{print "Memory: " $2/1024/1024/1024 " GB"}'
+          echo "核心数:"
+          sysctl -n hw.ncpu
+          echo "内存大小:"
+          sysctl hw.memsize | awk '{print $2/1024/1024/1024 " GB"}'
           
-          echo "==================== Xcode 信息 ===================="
+          echo "==================== [4] Xcode & 编译器信息 ===================="
           xcodebuild -version
           cc -v
+          
+          echo "==================== [5] 当前架构 (Arch) ===================="
+          arch
 
       - name: Install Build Tools
         run: |
@@ -85,26 +103,30 @@ jobs:
           
           cd "$(dirname "$TOOLCHAIN_DIR")"
           FOLDER_NAME=$(basename "$TOOLCHAIN_DIR")
-          ZIP_NAME="Hikari-LLVM19-Xcode26.2-macOS15.xctoolchain.zip"
+          # 文件名包含你输入的版本号
+          ZIP_NAME="Hikari-LLVM19-${{ github.event.inputs.version }}-Xcode26.2-macOS26.xctoolchain.zip"
           
           echo "正在打包: $FOLDER_NAME -> $ZIP_NAME"
           zip -r "${{ github.workspace }}/$ZIP_NAME" "$FOLDER_NAME"
           
           # 设置变量供后续步骤使用
           echo "zip_path=${{ github.workspace }}/$ZIP_NAME" >> $GITHUB_OUTPUT
-          echo "tag_name=v19-$(date +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
+          echo "tag_name=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.package.outputs.tag_name }}
-          name: Hikari-LLVM19 (macOS 26 / Xcode 26.2)
+          name: Hikari-LLVM19 Release ${{ github.event.inputs.version }}
           body: |
-            自动编译的 Hikari-LLVM19 Apple Silicon 版本。
-            - 编译环境: macOS 26
-            - Xcode 版本: 26.2
-            - 架构: arm64 (Universal Apple Silicon)
-            - 基础版本: LLVM 19
+            ## 编译信息
+            - **版本**: ${{ github.event.inputs.version }}
+            - **编译平台**: macOS 26 (Apple Silicon)
+            - **Xcode 版本**: 26.2
+            - **LLVM 核心**: 19.x
+            - **构建时间**: $(date)
+            
+            此工具链专门为 Apple Silicon (M1/M2/M3/M4) 架构优化。
           draft: false
           prerelease: false
           files: ${{ steps.package.outputs.zip_path }}
