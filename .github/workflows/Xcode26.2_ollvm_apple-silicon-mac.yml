@@ -1,4 +1,4 @@
-name: 编译 Hikari-LLVM19 并发布 Release
+name: 编译 Hikari-LLVM19 工具链 (Apple Silicon 版)
 
 on:
   workflow_dispatch: # 手动触发
