@@ -1,46 +1,53 @@
-name: 编译 Hikari-LLVM15 工具链 (Xcode 16)
+name: 编译 Hikari-LLVM15 工具链 (Apple Silicon 版)
 
 on:
+  # 手动触发编译
   workflow_dispatch:
     inputs:
       tag_name:
-        description: '发布到 Release 的版本号 (如 v1.0)'
+        description: '发布到 Release 的版本号 (如 v1.0-M1)'
         required: true
-        default: 'v1.0'
+        default: 'v1.0-M1'
 
+# 赋予 Action 写入 Release 的权限
 permissions:
   contents: write
 
 jobs:
   build_toolchain:
+    # macos-14 是标准的 Apple Silicon (M1) 运行器
     runs-on: macos-14
 
     steps:
-      - name: 1. 设置 Git 缓冲区
+      # --- 步骤 1：确认当前硬件架构 (确保是 M 芯片) ---
+      - name: 1. 验证硬件架构
+        run: |
+          echo "--- 硬件平台信息 ---"
+          uname -a
+          echo "--- 处理器架构 ---"
+          uname -m
+          sysctl -n machdep.cpu.brand_string
+
+      # --- 步骤 2：基础环境设置 ---
+      - name: 2. 设置 Git 缓冲区
         run: git config --global http.postBuffer 524288000
 
-      - name: 2. 安装编译依赖
+      - name: 3. 安装编译依赖
         run: brew install ninja cmake
 
-      - name: 3. 切换 Xcode 版本到 16.2
+      # --- 步骤 4：强制切换 Xcode 版本到 16.2 ---
+      - name: 4. 切换 Xcode 版本
         run: |
           sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
           xcodebuild -version
 
-      - name: 4. 克隆源码 (Recursive)
+      # --- 步骤 5：递归克隆 Hikari-LLVM15 源码 ---
+      - name: 5. 克隆源码 (Recursive)
         run: |
           git clone --recursive -b apple-arm64e-upstream-next https://github.com/LiuSky/Hikari-LLVM15.git
 
-      # --- 缓存加速：只要编译成功一次，下次无需等待 1 小时 ---
-      - name: 5. 缓存编译结果 (Cache)
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: Build
-          key: ${{ runner.os }}-llvm-build-v3
-
+      # --- 步骤 6：执行 CMake 配置 (每次都重新配置) ---
       - name: 6. 执行 CMake 配置
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           mkdir -p Build
           cd Build
@@ -62,13 +69,14 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$ABS_INSTALL_DIR" \
             ../Hikari-LLVM15/llvm
 
+      # --- 步骤 7：开始 Ninja 编译 (每次都完整编译) ---
       - name: 7. 开始 Ninja 编译
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           cd Build
           ninja
 
-      - name: 8. 生成 Xcode 工具链结构
+      # --- 步骤 8：生成 Xcode 工具链结构 ---
+      - name: 8. 安装并生成 Xcode 工具链
         run: |
           cd Build
           # 执行安装，将编译出的文件放入 install 目录
@@ -76,11 +84,10 @@ jobs:
           # 生成 .xctoolchain 文件夹
           ninja install-xcode-toolchain
 
-      # --- 关键修改：跳过所有修复步骤，直接打包 ---
+      # --- 步骤 9：打包工具链成品 ---
       - name: 9. 打包工具链成品
         run: |
           # 寻找生成的 .xctoolchain 文件夹
-          # 它通常在 Build/install/Toolchains/ 下，或者直接在 Build/install/ 下
           TOOLCHAIN_PATH=$(find Build/install -name "*.xctoolchain" -type d | head -n 1)
           
           if [ -z "$TOOLCHAIN_PATH" ]; then
@@ -99,14 +106,16 @@ jobs:
           tar -czvf ../../../Hikari-LLVM15-Xcode16.tar.gz "$FOLDER_NAME"
           echo "📦 打包完成"
 
+      # --- 步骤 10：创建 Release 并上传成品 ---
       - name: 10. 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name }}
           files: ./Hikari-LLVM15-Xcode16.tar.gz
           body: |
-            Hikari-LLVM15 原始编译成品 (Xcode 16)
-            - 仅包含编译出的原始文件
-            - 未进行任何后续补丁处理
+            Hikari-LLVM15 原始编译成品 (Apple Silicon / Xcode 16)
+            - 硬件平台: GitHub Actions macos-14 (Apple M1 运行器)
+            - 编译环境: Xcode 16.2
+            - 说明: 每次运行均通过云端全新编译生成。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
