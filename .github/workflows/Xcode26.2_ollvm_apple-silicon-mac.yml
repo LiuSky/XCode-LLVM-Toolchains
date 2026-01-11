@@ -16,25 +16,23 @@ jobs:
     runs-on: macos-26 
     
     steps:
-      - name: Checkout Code
+      - name: 步骤 1：检出源代码
         uses: actions/checkout@v4
         with:
           repository: Aethereux/Hikari-LLVM19
           fetch-depth: 1
 
-      - name: Select Xcode 26.2
+      - name: 步骤 2：切换 Xcode 版本 (26.2)
         run: |
           echo "正在尝试切换到 Xcode 26.2..."
-          # 注意：如果路径不存在会报错。在当前 GitHub 环境中实际为 /Applications/Xcode_16.2.app
-          # 下面这行按你要求写成 26.2
           if [ -d "/Applications/Xcode_26.2.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
           else
-            echo "警告: 未找到 Xcode 26.2，将显示当前默认 Xcode 版本"
+            echo "警告：系统未发现 /Applications/Xcode_26.2.app，将使用系统默认版本。"
           fi
           echo "当前使用的 Xcode 路径: $(xcode-select -p)"
 
-      - name: Print Detailed System & Hardware Information
+      - name: 步骤 3：打印详细系统与硬件信息
         run: |
           echo "==================== [1] 操作系统信息 (OS) ===================="
           sw_vers
@@ -43,27 +41,29 @@ jobs:
           echo "==================== [2] 硬件详细信息 (Hardware) ===================="
           system_profiler SPHardwareDataType
           
-          echo "==================== [3] CPU & 内存信息 ===================="
+          echo "==================== [3] CPU 与 内存信息 ===================="
           echo "CPU 型号:"
           sysctl -n machdep.cpu.brand_string
-          echo "核心数:"
+          echo "核心数量:"
           sysctl -n hw.ncpu
-          echo "内存大小:"
+          echo "物理内存:"
           sysctl hw.memsize | awk '{print $2/1024/1024/1024 " GB"}'
           
-          echo "==================== [4] Xcode & 编译器信息 ===================="
+          echo "==================== [4] Xcode 与 编译器版本 ===================="
           xcodebuild -version
           cc -v
           
-          echo "==================== [5] 当前架构 (Arch) ===================="
+          echo "==================== [5] 当前运行架构 ===================="
           arch
 
-      - name: Install Build Tools
+      - name: 步骤 4：安装构建工具 (CMake/Ninja)
         run: |
+          echo "正在通过 Homebrew 安装构建工具..."
           brew install cmake ninja
 
-      - name: Configure CMake
+      - name: 步骤 5：配置 CMake 参数
         run: |
+          echo "正在创建构建目录并配置 CMake..."
           mkdir build
           cd build
           cmake -G Ninja \
@@ -83,50 +83,53 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" \
             ../llvm
 
-      - name: Build
+      - name: 步骤 6：开始编译工具链 (此过程较长)
         run: |
+          echo "开始运行 Ninja 进行编译..."
           cd build
           ninja
 
-      - name: Install and Package
+      - name: 步骤 7：执行安装与打包
         id: package
         run: |
+          echo "正在生成 Xcode Toolchain 结构..."
           cd build
           ninja install-xcode-toolchain
           
-          # 查找生成的 .xctoolchain 目录
+          # 定位生成的 .xctoolchain 目录
           TOOLCHAIN_DIR=$(find ${{ github.workspace }}/install -name "*.xctoolchain" -type d)
           if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "错误: 未找到生成的 toolchain 目录"
+            echo "错误：未能找到编译生成的 toolchain 文件夹，请检查编译日志。"
             exit 1
           fi
           
           cd "$(dirname "$TOOLCHAIN_DIR")"
           FOLDER_NAME=$(basename "$TOOLCHAIN_DIR")
-          # 文件名包含你输入的版本号
+          # 使用用户输入的版本号命名压缩包
           ZIP_NAME="Hikari-LLVM19-${{ github.event.inputs.version }}-Xcode26.2-macOS26.xctoolchain.zip"
           
-          echo "正在打包: $FOLDER_NAME -> $ZIP_NAME"
+          echo "正在打包工具链：$FOLDER_NAME -> $ZIP_NAME"
           zip -r "${{ github.workspace }}/$ZIP_NAME" "$FOLDER_NAME"
           
-          # 设置变量供后续步骤使用
+          # 输出结果供后续 Release 步骤使用
           echo "zip_path=${{ github.workspace }}/$ZIP_NAME" >> $GITHUB_OUTPUT
           echo "tag_name=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release and Upload Asset
+      - name: 步骤 8：发布 GitHub Release 并上传文件
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.package.outputs.tag_name }}
-          name: Hikari-LLVM19 Release ${{ github.event.inputs.version }}
+          name: "Hikari-LLVM19 自动发布 - 版本号 ${{ github.event.inputs.version }}"
           body: |
-            ## 编译信息
-            - **版本**: ${{ github.event.inputs.version }}
-            - **编译平台**: macOS 26 (Apple Silicon)
+            ## 🛠 编译环境报告
+            - **软件版本**: ${{ github.event.inputs.version }}
+            - **编译平台**: macOS 26 (Apple Silicon 实例)
             - **Xcode 版本**: 26.2
-            - **LLVM 核心**: 19.x
-            - **构建时间**: $(date)
+            - **编译器内核**: LLVM 19
+            - **目标架构**: arm64 (Universal)
+            - **构建状态**: 成功
             
-            此工具链专门为 Apple Silicon (M1/M2/M3/M4) 架构优化。
+            此文件由 GitHub Actions 自动构建并发布。
           draft: false
           prerelease: false
           files: ${{ steps.package.outputs.zip_path }}
