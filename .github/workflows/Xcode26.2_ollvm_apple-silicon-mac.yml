@@ -1,11 +1,14 @@
-name: 编译 Hikari-LLVM19 (通用 Apple Silicon 版)
+name: 编译 Hikari-LLVM19 并发布 Release
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发
+
+permissions:
+  contents: write # 必须赋予写入权限才能创建 Release
 
 jobs:
   build-ollvm:
-    runs-on: macos-15
+    runs-on: macos-26 # GitHub 目前最新的 Apple Silicon 运行环境
     
     steps:
       - name: Checkout Code
@@ -14,12 +17,28 @@ jobs:
           repository: Aethereux/Hikari-LLVM19
           fetch-depth: 1
 
-      - name: Check Environment
+      - name: Select Xcode 26.2
         run: |
-          echo "当前使用的 Xcode 版本:"
+          # 强制切换到 Xcode 26.2
+          sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          echo "Selected Xcode Path: $(xcode-select -p)"
+
+      - name: Print Detailed System & Hardware Information
+        run: |
+          echo "==================== OS 信息 ===================="
+          sw_vers
+          uname -a
+          
+          echo "==================== 硬件信息 ===================="
+          system_profiler SPHardwareDataType
+          
+          echo "==================== CPU & 内存信息 ===================="
+          sysctl -n machdep.cpu.brand_string
+          sysctl hw.memsize | awk '{print "Memory: " $2/1024/1024/1024 " GB"}'
+          
+          echo "==================== Xcode 信息 ===================="
           xcodebuild -version
-          echo "当前架构:"
-          uname -m
+          cc -v
 
       - name: Install Build Tools
         run: |
@@ -52,18 +71,42 @@ jobs:
           ninja
 
       - name: Install and Package
+        id: package
         run: |
           cd build
           ninja install-xcode-toolchain
           
-          # 自动寻找并压缩
+          # 查找生成的 .xctoolchain 目录
           TOOLCHAIN_DIR=$(find ${{ github.workspace }}/install -name "*.xctoolchain" -type d)
-          cd "$TOOLCHAIN_DIR/.."
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "错误: 未找到生成的 toolchain 目录"
+            exit 1
+          fi
+          
+          cd "$(dirname "$TOOLCHAIN_DIR")"
           FOLDER_NAME=$(basename "$TOOLCHAIN_DIR")
-          zip -r "${{ github.workspace }}/Hikari-LLVM19-AppleSilicon.xctoolchain.zip" "$FOLDER_NAME"
+          ZIP_NAME="Hikari-LLVM19-Xcode26.2-macOS15.xctoolchain.zip"
+          
+          echo "正在打包: $FOLDER_NAME -> $ZIP_NAME"
+          zip -r "${{ github.workspace }}/$ZIP_NAME" "$FOLDER_NAME"
+          
+          # 设置变量供后续步骤使用
+          echo "zip_path=${{ github.workspace }}/$ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "tag_name=v19-$(date +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release and Upload Asset
+        uses: softprops/action-gh-release@v2
         with:
-          name: Hikari-LLVM19-macOS15-arm64
-          path: Hikari-LLVM19-AppleSilicon.xctoolchain.zip
+          tag_name: ${{ steps.package.outputs.tag_name }}
+          name: Hikari-LLVM19 (macOS 26 / Xcode 26.2)
+          body: |
+            自动编译的 Hikari-LLVM19 Apple Silicon 版本。
+            - 编译环境: macOS 26
+            - Xcode 版本: 26.2
+            - 架构: arm64 (Universal Apple Silicon)
+            - 基础版本: LLVM 19
+          draft: false
+          prerelease: false
+          files: ${{ steps.package.outputs.zip_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
