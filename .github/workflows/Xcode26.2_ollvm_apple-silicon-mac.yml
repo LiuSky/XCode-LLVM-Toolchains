@@ -1,4 +1,4 @@
-name: Build Hikari-LLVM19 (Xcode 26.2 + macOS 15)
+name: 编译 Hikari-LLVM15 工具链 (Apple Silicon 版) (Xcode 26.2 + macOS 15)
 
 on:
   workflow_dispatch: # 手动触发构建
