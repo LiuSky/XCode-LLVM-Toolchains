@@ -1,11 +1,10 @@
-name: 编译 Hikari-LLVM20 工具链 (Apple Silicon 版) (Xcode 26.2 + macOS 15)
+name: 编译 Hikari-LLVM19 (通用 Apple Silicon 版)
 
 on:
-  workflow_dispatch: # 手动触发构建
+  workflow_dispatch:
 
 jobs:
   build-ollvm:
-    # 使用 macOS 15 (Sequoia) 运行环境
     runs-on: macos-15
     
     steps:
@@ -15,12 +14,12 @@ jobs:
           repository: Aethereux/Hikari-LLVM19
           fetch-depth: 1
 
-      - name: Select Xcode 26.2
+      - name: Check Environment
         run: |
-          # 查找 Xcode 26.2 的路径并切换
-          # 在 GitHub macos-15 镜像中，Xcode 26.2 的路径通常如下：
-          sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          echo "当前使用的 Xcode 版本:"
           xcodebuild -version
+          echo "当前架构:"
+          uname -m
 
       - name: Install Build Tools
         run: |
@@ -47,33 +46,24 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/install" \
             ../llvm
 
-      - name: Build Hikari LLVM
+      - name: Build
         run: |
           cd build
           ninja
 
-      - name: Install Toolchain
+      - name: Install and Package
         run: |
           cd build
-          # 安装到指定的 install 目录
           ninja install-xcode-toolchain
           
-          # 定位生成的 .xctoolchain 文件夹
-          # 路径通常是: install/lib/Toolchains/LLVM19.0.0git.xctoolchain
+          # 自动寻找并压缩
           TOOLCHAIN_DIR=$(find ${{ github.workspace }}/install -name "*.xctoolchain" -type d)
-          echo "FOUND_TOOLCHAIN=$TOOLCHAIN_DIR" >> $GITHUB_ENV
-          echo "Toolchain found at: $TOOLCHAIN_DIR"
-
-      - name: Package Toolchain
-        run: |
-          cd "${{ env.FOUND_TOOLCHAIN }}/.."
-          FOLDER_NAME=$(basename "${{ env.FOUND_TOOLCHAIN }}")
-          # 压缩成 zip，方便下载
-          zip -r "${{ github.workspace }}/Hikari-LLVM19-Xcode26.2-macOS15-arm64.xctoolchain.zip" "$FOLDER_NAME"
+          cd "$TOOLCHAIN_DIR/.."
+          FOLDER_NAME=$(basename "$TOOLCHAIN_DIR")
+          zip -r "${{ github.workspace }}/Hikari-LLVM19-AppleSilicon.xctoolchain.zip" "$FOLDER_NAME"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Hikari-LLVM19-Xcode26.2-arm64
-          path: Hikari-LLVM19-Xcode26.2-macOS15-arm64.xctoolchain.zip
-          retention-days: 7
+          name: Hikari-LLVM19-macOS15-arm64
+          path: Hikari-LLVM19-AppleSilicon.xctoolchain.zip
